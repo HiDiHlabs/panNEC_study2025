@@ -1,0 +1,255 @@
+---
+title: "NET samples  - Data import, SoupX rounded to integer"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+library(Matrix)
+
+library(readxl)
+library(knitr)
+library(data.table)
+library(cowplot)
+
+data_storage_folder = "../Data/Processed/"
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+```
+
+# Overview
+
+Data was generated from nuclei of frozen neuroendocrine tumors and measured on a 10x Chromium system. Reads were counted using Cellranger v6.0.1 using exonic and intronic (nuclear pre-mRNA) reads. 
+
+The quality of the libraries and sequencing results is rather low, with low number of detected genes per cells, low fraction of reads inside cells and too high antisense mapping rate
+
+
+## Sample description
+
+```{r}
+ed = as.data.frame(read_excel("../SampleDescription.xlsx", sheet = 1), stringsAsFactors = F)
+rownames(ed) <- NULL
+kable(ed)
+```
+
+
+# Sequencing results
+
+```{r}
+metrics_summary = list.files(path="../CellRanger/", pattern = "metrics_summary.csv", recursive = T, full.names=T)
+names(metrics_summary) = unlist(sapply(strsplit(dirname(metrics_summary),"/"), function(x) x[length(x)-1] ) )
+
+all_metrics = list()
+
+for (m in names(metrics_summary)) {
+  all_metrics[[m]] = read.table(metrics_summary[m], sep=",", header=T)
+  all_metrics[[m]]$SampleID = m
+}
+
+metrics_df = do.call(rbind, all_metrics)
+
+
+kable(metrics_df)
+
+```
+
+
+
+# Data import
+
+```{r}
+reload_data_stage1 = F
+
+stage1_file = file.path(data_storage_folder, "All_Raw_scData_stage1_SoupX_integer.Rdata")
+
+if(reload_data_stage1) {
+ 
+  stage1_file_raw = file.path(data_storage_folder, "All_Raw_scData.Rdata")
+  load(stage1_file_raw)
+  
+  
+  meta_orig = all_ge_data_raw@meta.data
+   
+  sel_samples = paste0("SP084_", c("007","018","019","021","027","028"))
+  
+  all_sample_data = list()
+  soupx_env = new.env()
+  for (s in sel_samples) {
+      load(file.path(data_storage_folder, paste0("SoupX_out_integer_",s, ".Rdata")), soupx_env)
+      tmp_d = CreateSeuratObject(get("out", envir = soupx_env), project=s)
+      all_sample_data[[s]] = RenameCells(tmp_d, new.names=paste0(s,"_",Cells(tmp_d)) )
+  }
+  
+  all_ge_data_raw = merge(all_sample_data[[1]], all_sample_data[2:length(all_sample_data)])
+  rm(all_sample_data)
+  gc(verbose=F)
+  
+  rownames(ed) = ed$SampleID
+  
+  ed$sample_id_final = ed$SampleID
+  
+  meta = as.data.table(all_ge_data_raw@meta.data)
+  meta[, orig_cell_id:= rownames(all_ge_data_raw@meta.data)]
+  meta[, sample_id_final:=unlist(sapply(strsplit(meta$orig_cell_id,"_"), function(x) paste(x[1:2], collapse="_")))]
+  
+  meta[, group:=ed[sample_id_final, "Group"]]
+  meta[, sample_label:=ed[sample_id_final, "TissueID"]]
+  
+  meta[, nCount_RNA.orig:= meta_orig[meta$orig_cell_id, "nCount_RNA"]]
+  meta[, nFeature_RNA.orig:= meta_orig[meta$orig_cell_id, "nFeature_RNA"]]
+  
+  for (cc in c("orig_cell_id", "sample_id_final", "group", "sample_label", "nCount_RNA.orig","nFeature_RNA.orig")) {
+    all_ge_data_raw = AddMetaData(all_ge_data_raw, meta[[cc]], col.name=cc)
+  }
+  
+  save(all_ge_data_raw, ed,  file=stage1_file)
+} else {
+  load(stage1_file) 
+}
+
+
+```
+
+## Cells per sample (unfiltered)
+
+```{r}
+table(all_ge_data_raw$sample_label)
+table(all_ge_data_raw$group)
+```
+
+```{r}
+meta = all_ge_data_raw@meta.data
+par(mar=c(12,4,4,1))
+barplot(table(meta$sample_label), las=2, ylab="Cell count")
+```
+
+
+# Quality control
+
+## Detected genes
+
+```{r, fig.width = 8}
+ggplot(meta) + geom_boxplot(aes(x=sample_id_final, y=nFeature_RNA, fill=sample_label)) + theme(axis.text.x = element_text(angle=45, hjust=1)) + ylab("Number of detected genes") + xlab("Sample") + scale_y_log10()
+```
+
+## Overview
+
+```{r}
+all_ge_data_raw <- PercentageFeatureSet(all_ge_data_raw, "^MT-|^mt-", col.name = "percent_mito")
+all_ge_data_raw <- PercentageFeatureSet(all_ge_data_raw, "^RP[SL]|^Rp[sl]", col.name = "percent_ribo")
+```
+
+### General features
+
+```{r, fig.width=14, fig.height=10}
+feats <- c("nCount_RNA","percent_mito","percent_ribo")
+VlnPlot(all_ge_data_raw, group.by= "sample_id_final", features = feats, pt.size = 0.02,ncol = 2) + NoLegend()
+```
+
+### Pairwise parameter correlations
+
+```{r, fig.width=14, fig.height=12}
+cowplot::plot_grid(ncol = 2, nrow = 2, 
+  FeatureScatter(all_ge_data_raw, "nCount_RNA"  , "nFeature_RNA", group.by = "sample_id_final", pt.size = .5) + guides(colour = guide_legend(override.aes = list(size=4))),
+  FeatureScatter(all_ge_data_raw, "percent_mito", "nCount_RNA", group.by = "sample_id_final", pt.size = .5) + guides(colour = guide_legend(override.aes = list(size=4))),
+  FeatureScatter(all_ge_data_raw, "percent_ribo", "nCount_RNA", group.by = "sample_id_final", pt.size = .5) + guides(colour = guide_legend(override.aes = list(size=4))),
+  FeatureScatter(all_ge_data_raw, "percent_ribo", "percent_mito", group.by = "sample_id_final", pt.size = .5) + guides(colour = guide_legend(override.aes = list(size=4)))
+)
+
+```
+
+### Pairwise feature distribution densities
+
+```{r, fig.width=14, fig.height=10}
+meta = as.data.table(all_ge_data_raw@meta.data)
+
+ggplot(meta) + geom_density2d_filled(aes(x=nCount_RNA, y=nFeature_RNA), contour_var = "ndensity" ) + facet_wrap(~sample_id_final) + ggtitle("nCount_RNA")
+ggplot(meta) + geom_density2d_filled(aes(x=percent_ribo, y=nCount_RNA), contour_var = "ndensity" ) + facet_wrap(~sample_id_final) + ggtitle("percent ribo")
+```
+
+### Thresholds for numbers of detected genes and percentage of mitochondrial genes
+
+```{r}
+hist(meta$nFeature_RNA, 1000, main="Number of reads per cell"); abline(v=c(300,40000), col="red")
+hist(meta$percent_mito, 1000, main="Percent mitochondrial RNA"); abline(v=5, col="red")
+```
+
+
+```{r}
+ggplot(meta, aes(x=nFeature_RNA)) + geom_density() + facet_wrap(~sample_id_final) + scale_x_log10() + geom_vline(xintercept = c(300,4000), col="red")
+ggplot(meta, aes(x=percent_mito)) + geom_density() + facet_wrap(~sample_id_final) + scale_x_log10() + geom_vline(xintercept = c(5), col="red")
+```
+
+
+
+# Filtering 
+
+We exclude cells with less than 300 detected genes, those with > 4000 detected genes (possible doublets) and those with clear signs of cellular stress (percentage of mitochondrial RNA > 5%). 
+
+Note that due to the nature of the libraries (nuclear RNA sequencing) the percent of mitochondrial genes is not very meaningful. 
+
+```{r}
+feature_low = 300
+feature_high = 4000
+max_mito = 5
+
+all_ge_data_raw = AddMetaData(all_ge_data_raw, (all_ge_data_raw$nFeature_RNA > feature_low & all_ge_data_raw$nFeature_RNA < feature_high & all_ge_data_raw$percent_mito < max_mito), col.name="CellFilterKeep")
+
+ribo.genes <- grepl(pattern = "^RP[SL]|^Rp[sl]", x = rownames(x = all_ge_data_raw@assays$RNA))
+mito.genes <- grepl(pattern = "^MT-|^mt-", x = rownames(x = all_ge_data_raw@assays$RNA))
+
+selected_c <- WhichCells(all_ge_data_raw, expression = CellFilterKeep )
+selected_f <- rownames(all_ge_data_raw)[ Matrix::rowSums(all_ge_data_raw) >= 2 & !(ribo.genes | mito.genes)]
+```
+
+
+
+## Number of removed/kept cells per condition
+
+```{r}
+m = table(all_ge_data_raw$sample_id_final, ifelse(all_ge_data_raw$CellFilterKeep, "Keep","Remove") )
+m
+```
+
+```{r, fig.height=7, fig.width=8}
+
+mm_ts = reshape2::melt(m)
+colnames(mm_ts) = c("Group","Status","Count")
+mm_ts$Status = factor(mm_ts$Status, levels=c("Remove","Keep"))
+
+ggplot(mm_ts, aes(x=Group, fill=Status,y=Count)) + geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=45, hjust=1, size=14), legend.text = element_text(size=16)) + xlab("") + geom_hline(yintercept = 1000) + ggtitle("Total number of kept and filtered cells per condition (horizontal line = 1000 cells)")
+```
+
+
+
+```{r}
+all_ge_data_filtered <- subset(all_ge_data_raw, features=selected_f, cells=selected_c)
+
+dim(all_ge_data_filtered)
+```
+
+Raw and filtered data is saved to file *All_Filtered_scData.Rdata* in folder `r data_storage_folder` .
+
+```{r}
+save(all_ge_data_filtered, ed, file=file.path(data_storage_folder, "All_Filtered_scData_SoupX_integer.Rdata"))
+```
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,131 @@
+---
+title: "NET scData after SoupX, 6 best samples plus *all* adult pancreas reference samples from Tosti et al. - Preprocessing, no SCT, downsampling of all samples to minimal total read count - BBKNN batch correction"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message=FALSE}
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(knitr)
+library(data.table)
+library(cowplot)
+library(scuttle)
+
+library(pheatmap)
+
+library(scran)
+library(harmony)
+library(bbknnR)
+
+library(future)
+options(future.seed=TRUE)
+options(future.globals.maxSize = 10*2**32)
+#plan("sequential")
+
+data_storage_folder = "../Data/Processed"
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+```
+
+
+# Final preprocessing
+
+Standard Seurat pipeline including BBKNN based adjustment of neighbors for sample effects (orig.ident) + UMAP embedding followed by standard FindClusters based on BBKNN graph. 
+
+
+```{r}
+load(file.path(data_storage_folder, "SoupX_6best_and_all_Tosti_pancreas_preprocessing_downsampled_to_500_total_reads_split.Rdata"))
+
+set.seed(1234)
+```
+
+
+
+```{r}
+NET_samples = list(P7="SP084_007", P18="SP084_018", P19="SP084_019", P21="SP084_021", P24ab=paste("SP084_", c("027","028"), sep="") )
+
+NET_sub_to_sample = rep(names(NET_samples), times=unlist(lapply(NET_samples, length)))
+names(NET_sub_to_sample) = unlist(NET_samples)
+
+scData.combined = merge(sc.list[[1]], sc.list[2:length(sc.list)])
+
+scData.combined$sourceID = ifelse(is.na(scData.combined$sample_id_final), "Healthy pancreas", NET_sub_to_sample[as.character(scData.combined$sample_id_final)])
+
+scData.combined$batchID = ifelse(is.na(scData.combined$sample_id_final), "Healthy pancreas", as.character(scData.combined$sample_id_final))
+
+scData.combined$Cluster_Tosti_and_NET = ifelse(is.na(scData.combined$Cluster), scData.combined$sourceID, scData.combined$Cluster)
+
+set.seed(20220602)
+start_env = ls()
+
+plan("multicore", workers = 4)
+
+
+all.genes <- rownames(scData.combined)
+scData.combined <- FindVariableFeatures(scData.combined, selection.method = "vst", nfeatures = 2000)
+
+scData.combined <- ScaleData(scData.combined, verbose = TRUE)
+gc()
+scData.combined <- RunPCA(scData.combined, npcs = 30, verbose = TRUE)
+gc()
+
+# Standard pipeline + BBKNN
+scData.combined <- RunBBKNN(scData.combined, reduction = "pca", batch_key = "orig.ident", n_pcs = 30, run_TSNE = F)
+scData.combined <- FindClusters(scData.combined, resolution = 0.9, graph.name = "bbknn")
+
+version_string = paste0("NET_SoupX_downsampled_6best_and_all_Tosti_pancreas_BBKNN")
+ds_file = file=file.path(data_storage_folder, paste0(version_string,".RData"))
+save(scData.combined, file=ds_file)
+```
+
+```{r, fig.width=8, fig.height=6}
+scData.combined <- SetIdent(scData.combined, value="seurat_clusters")
+print(DimPlot(scData.combined, reduction = "umap", label=T) + NoLegend() + ggtitle("Seurat clusters")) 
+
+print(DimPlot(scData.combined, reduction = "umap", split.by = "sourceID") + ggtitle("Seurat clusters")) 
+
+scData.combined <- SetIdent(scData.combined, value="Cluster_Tosti_and_NET")
+
+print(DimPlot(scData.combined, reduction = "umap", label = T) + NoLegend() + ggtitle("Tosti clusters") )
+
+print(DimPlot(scData.combined, reduction = "umap", split.by = "sourceID", label = T) + NoLegend() + ggtitle("Clusters by data set") )
+
+rm(list=ls()[!ls() %in% start_env])
+gc(full = T)
+
+```
+
+# Seurat clusters to Tosti clusters/NETs
+
+```{r}
+m  = table(scData.combined$Cluster_Tosti_and_NET, scData.combined$seurat_clusters)
+m
+```
+
+```{r, fig.height=6, fig.width=8}
+mm = t(as.matrix.data.frame(m))
+colnames(mm) = rownames(m)
+rownames(mm) = colnames(m)
+mm_rel = sweep(mm, 2, apply(mm, 2,sum), "/")
+pheatmap(mm_rel, main="Proportion of Tosti cluster/NET samples mapping to each new cluster")
+```
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+
