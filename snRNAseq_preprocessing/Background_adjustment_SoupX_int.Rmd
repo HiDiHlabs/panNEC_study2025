@@ -1,0 +1,111 @@
+---
+title: "NET Tumour Single Cell Experiments, CellRanger v6 - Background estimation and adjustment with SoupX, forcing integer output"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message=FALSE}
+rm(list=ls())
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(knitr)
+library(data.table)
+library(cowplot)
+
+library(pheatmap)
+
+#devtools::install_github("constantAmateur/SoupX",ref='devel')
+library(SoupX)
+library(dplyr)
+
+data_storage_folder = file.path("./Results/data_storage","2021-06-14")
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+```
+
+# Overview
+
+NET snRNA-Seq samples, SoupX Background removal - rounding all corrected values to integer. 
+
+## Sample description
+
+```{r}
+ed = as.data.frame(read_excel("../SampleDescription.xlsx", sheet = 1), stringsAsFactors = F)
+rownames(ed) <- NULL
+kable(ed)
+```
+
+# Data import
+
+```{r, message=FALSE}
+reload_data_raw_and_filtered = T
+
+data_file = file.path(data_storage_folder, "BG_Adjusted_Data_SoupX_Info_integer.Rdata")
+rownames(ed) = ed$SampleID
+
+
+if(reload_data_raw_and_filtered) {
+
+  folders = list.files(pattern = "*outs$", path="../CellRanger", all.files=T, include.dirs=T, full.names = T, recursive=T)
+  names(folders) = basename(dirname(folders))
+
+  all_bg_adjusted_info = list()
+  for (n in ed$`SampleID`) {
+    
+    print(paste0("Current sample: ",n))
+    
+    sc = load10X( folders[n] )
+    tmp = tryCatch({autoEstCont(sc, tfidfMin = 0.6, soupQuantile = 0.9, priorRho = 0.1)}, error=function(x) NULL)
+    if(!is.null(tmp)) {
+      title(main=n)
+      sc = tmp
+      out = adjustCounts(sc, roundToInt = T)
+    } else {
+      tmp = tryCatch({autoEstCont(sc, forceAccept = T, tfidfMin = 0.6, soupQuantile = 0.9, priorRho = 0.1)}, error=function(x) NULL)
+      
+      if(!is.null(tmp)) {
+        title(main=n)
+        sc = tmp
+        out = adjustCounts(sc, roundToInt = T)
+      } else {
+        print(paste0("Sample ",n, " failed background correction."))
+        out = NA  
+      }
+    }
+
+    sc_info = list(channelName = sc$channelName, metaData = sc$metaData, nDropUMIs = sc$nDropUMIs, soupProfile = sc$soupProfile, fit = sc$fit)
+    
+    all_bg_adjusted_info[[n]] = sc_info
+    
+    save(out, file = file.path(data_storage_folder, paste0("SoupX_out_integer_",n,".Rdata")))
+    
+    rm(sc, out)
+    gc()
+  }
+  
+  save(all_bg_adjusted_info, file=data_file)
+    
+} else {
+   load(data_file)
+}
+
+```
+
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+
