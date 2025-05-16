@@ -1,0 +1,169 @@
+---
+title: "NET scData after SoupX, plus *all* adult pancreas reference samples from Tosti et al. - Preprocessing, no SCT, downsampling of all samples to minimal total read count"
+author: "Hilmar Berger"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+    
+pdf_document:
+    fig_caption: true
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M:%S')`"
+---
+
+```{r, message=FALSE}
+library(Seurat)
+library(ggplot2)
+
+library(readxl)
+library(knitr)
+library(data.table)
+library(cowplot)
+library(scuttle)
+
+library(pheatmap)
+
+library(future)
+plan("multicore", workers = 2)
+options(future.globals.maxSize = 10*2**32)
+#plan("sequential")
+
+data_storage_folder = "../Data/Processed"
+if (!file.exists(data_storage_folder)) dir.create(data_storage_folder, recursive=T)
+
+version_string = "SoupX_6best_and_all_Tosti_pancreas_preprocessing_downsampled_to_500_total_reads"
+
+```
+
+```{r}
+reload_data = T
+if(reload_data) {
+  load(file.path("../Data/Processed/", "All_Filtered_scData_SoupX_integer.Rdata"))
+
+  sel_cells = WhichCells(all_ge_data_filtered, expression = sample_id_final %in% c("SP084_007","SP084_018","SP084_019","SP084_021", "SP084_027", "SP084_028"))
+
+  all_ge_data_filtered = subset(all_ge_data_filtered, cells = sel_cells)
+
+  table(all_ge_data_filtered$sample_id_final)
+}
+```
+
+
+```{r}
+if(reload_data) {
+  d = fread("../Data/Tosti_pancreas/Raw/exprMatrix.tsv.gz")
+  d1 = Matrix(as.matrix(d[, 2:ncol(d)]), sparse=T)
+  tmp = strsplit(d$gene,"\\|")
+  rownames(d1) = unlist(sapply(tmp,`[`,1))
+  rm(d)
+  gc()
+  
+  meta = as.data.frame(fread("../Data/Tosti_pancreas/Raw/meta.tsv"))
+  rownames(meta) = meta$Cell
+  
+  sc_adult_pancreas = CreateSeuratObject(d1, project = "Tosti_adult_pancreas", meta.data = meta)
+
+  sc_adult_pancreas@meta.data$orig.ident = paste0(sc_adult_pancreas$patient_ID)
+  sc_adult_pancreas <- RenameCells(sc_adult_pancreas, add.cell.id = "Tosti")
+}
+```
+
+```{r}
+if(reload_data) {
+  genes_NET = rownames(all_ge_data_filtered@assays$RNA@counts)
+  genes_Tosti = rownames(sc_adult_pancreas@assays$RNA@counts)
+
+  genes_shared = intersect(genes_NET, genes_Tosti)
+
+  meta_cols_NET = colnames(all_ge_data_filtered@meta.data)
+  meta_cols_Tosti = colnames(sc_adult_pancreas@meta.data)
+
+  shared_cols = intersect(meta_cols_NET, meta_cols_Tosti)
+
+  sc_adult_pancreas@meta.data$DS = "Tosti"
+  all_ge_data_filtered@meta.data$DS = "NET"
+
+  for (cc in meta_cols_NET[!meta_cols_NET %in% shared_cols]) {
+      sc_adult_pancreas = AddMetaData(sc_adult_pancreas, NA, col.name=cc)
+  }
+
+  for (cc in meta_cols_Tosti[!meta_cols_Tosti %in% shared_cols]) {
+      all_ge_data_filtered = AddMetaData(all_ge_data_filtered, NA, col.name=cc)
+  }
+
+  combined_sc_data = merge(subset(all_ge_data_filtered, features = genes_shared), subset(sc_adult_pancreas, features = genes_shared))
+}
+
+```
+
+We down-sample read counts by dividing by sample specific size factors estimated as the ratio of the sample median of cell total counts to a target total count. Cells that have less than 150 detected genes after downsampling will be excluded. 
+
+```{r}
+if(reload_data) {
+  cs = colSums(combined_sc_data@assays$RNA@counts)
+  cs_per_group = tapply(cs, combined_sc_data$orig.ident, median)
+  boxplot(cs ~ combined_sc_data$orig.ident, ylab="Cell total read sums", las=2, xlab="", log="y", main="Before downsampling") 
+
+target_cs = 500 # set some reasonable target read count 
+
+size_factors = pmax(cs_per_group/target_cs,1) # min of size factors is 1 as we will not increase read counts. 
+
+
+set.seed(20220531)
+tmp = scuttle::downsampleMatrix(combined_sc_data@assays$RNA@counts, 1/size_factors[combined_sc_data$orig.ident])
+
+cs2 = colSums(tmp)
+boxplot(cs2 ~ combined_sc_data$orig.ident, ylab="Cell total read sums", las=2, xlab="", log="y", main="after downsampling")  
+
+old_meta = combined_sc_data@meta.data
+combined_sc_data = CreateSeuratObject(tmp, meta.data = old_meta[colnames(tmp),])
+combined_sc_data$nCount_RNA = colSums(combined_sc_data@assays$RNA@counts)
+combined_sc_data$nFeature_RNA = colSums(combined_sc_data@assays$RNA@counts>0)
+combined_sc_data = subset(combined_sc_data, cells = WhichCells(combined_sc_data, expression = (nFeature_RNA > 150) ))
+rm(tmp2, old_meta)
+gc()
+}
+
+table(combined_sc_data$orig.ident)
+```
+
+
+
+
+# Final preprocessing
+
+Since there are several independent batches of samples with partially very different outcomes in terms of processing quality and cell viability we will use data set integration (Stuart and Butler et al., Cell 2019, doi: 10.1016/j.cell.2019.05.031) as implemented in Seurat v3.
+
+
+```{r}
+
+split_data_file = paste0(version_string, "_split.Rdata")
+if(reload_data) {
+  sc.list <- SplitObject(combined_sc_data, split.by = "orig.ident")
+
+  sc.list <- lapply(X = sc.list, FUN = function(x) {
+      x <- NormalizeData(x)
+      x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+  })
+
+  sc.features <- SelectIntegrationFeatures(object.list = sc.list)
+  sc.list <- lapply(X = sc.list, FUN = function(x) {
+    x <- ScaleData(x, features = sc.features, verbose = FALSE)
+    x <- RunPCA(x, features = sc.features, verbose = FALSE)
+  })
+  
+  save(sc.list, sc.features, file=file.path(data_storage_folder, split_data_file ) )
+} else {
+  load(file.path(data_storage_folder, split_data_file))
+}
+```
+
+# Software versions
+
+```{r}
+sessionInfo()
+```
+
