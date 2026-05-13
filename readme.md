@@ -18,7 +18,7 @@ Processed data (h5ad) & the list of 4,000 highly variable genes are available vi
 ## Contact
 
 **Dr. Olivia Debnath** — olivia_debnath@dfci.harvard.edu  
-**Dr. Hilmar Berger** — hilmar.berger@charite.de
+**Dr. Hilmar Berger** — hilmar.berger@charite.de & 
 **Dr. Naveed Ishaque** - naveed.ishaque@bih-charite.de
 
 ## Repository structure
