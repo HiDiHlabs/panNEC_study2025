@@ -1,0 +1,62 @@
+---
+title: "QC_plots_after_SoupX_integer"
+output: html_document
+date: "2023-09-07"
+---
+
+```{r}
+library(Seurat)
+library(ggplot2)
+data_storage_folder = "./Results/data_storage/2021-06-14/"
+
+result_folder = paste("./Results",format(Sys.time(), "%Y-%m-%d"),sep="/")
+if (!file.exists(result_folder)) dir.create(result_folder, recursive=T)
+```
+
+
+```{r}
+load(file.path(data_storage_folder, "All_Raw_scData_SoupX_integer.Rdata"))
+load(file.path(data_storage_folder, "All_Filtered_scData_SoupX_integer.Rdata"))
+```
+
+```{r}
+cell_states = read.table("../Olivia/Cell_states_HB_30082023.csv", sep=",", header=T, row.names = 1)
+cell_types = read.table("../Olivia/Cell_types_HB_30082023.csv", sep=",", header=T, row.names = 1)
+
+scData <- all_ge_data_filtered
+
+scData@meta.data$cell_state_OD <- cell_states[Cells(scData), 1]
+scData@meta.data$cell_types_OD <- cell_types[Cells(scData), 1]
+
+orig_to_sample <- c("SP084_007"="P1","SP084_018"="P2" ,"SP084_019"="P3", "SP084_021"="P4", "SP084_027"="P5", "SP084_028"="P5")
+scData@meta.data$sample_final <- orig_to_sample[scData$orig.ident]
+
+scData_unfiltered <- all_ge_data_raw
+
+orig_to_sample <- c("SP084_007"="P1","SP084_018"="P2" ,"SP084_019"="P3", "SP084_021"="P4", "SP084_027"="P5", "SP084_028"="P5")
+scData_unfiltered@meta.data$sample_final <- orig_to_sample[scData_unfiltered$orig.ident]
+```
+
+```{r}
+scData = scData[, !is.na(scData$cell_types_OD)]
+```
+
+
+```{r}
+p <- VlnPlot(scData, feature="nCount_RNA", pt.size = 0, group.by = "sample_final") + scale_y_log10() + ggtitle("UMI count per sample") + xlab("Sample") + NoLegend()
+p
+
+pdf(file=file.path(result_folder, "UMI_count_per_sample.pdf"), width=6, height = 4)
+print(p)
+dev.off()
+```
+
+
+```{r}
+p <- VlnPlot(scData_unfiltered, feature="nFeature_RNA", pt.size = 0, group.by = "sample_final") + scale_y_log10() + ggtitle("Feature count per sample, unfiltered SoupX") + xlab("Sample") + NoLegend() + geom_hline(yintercept=c(300,4000), lty=2)
+p
+
+pdf(file=file.path(result_folder, "Feature_count_per_sample_SoupX_unfiltered.pdf"), width=6, height = 4)
+print(p)
+dev.off()
+```
