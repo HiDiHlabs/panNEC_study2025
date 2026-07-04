@@ -2,7 +2,7 @@
 # panNEC Single-Cell Atlas — Code & Analysis Repository
 
 **Associated manuscript:** Aberrant brain-type neuronal programs in large-cell pancreatic neuroendocrine carcinoma  
-**Zenodo DOI:** https://doi.org/10.5281/zenodo.20097468  
+**Zenodo DOI:** https://doi.org/10.5281/zenodo.20097469  (alternatively, https://doi.org/10.5281/zenodo.20097468 also works) 
 **GEO accession:** [GSE291816](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE291816)
 
 ---
